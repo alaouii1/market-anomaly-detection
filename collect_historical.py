@@ -28,7 +28,7 @@ def get_klines(symbol, interval, limit):
 def to_dataframe(raw_data):
     """
     Convert raw Binance data to a clean DataFrame.
-    
+     
     Parameters:
     - raw_data: List of lists from Binance API
     

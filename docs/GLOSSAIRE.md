@@ -10,10 +10,12 @@
 
 1. [Data Concepts](#1-data-concepts)
 2. [Statistics Concepts](#2-statistics-concepts)
-3. [Anomaly Detection Concepts](#3-anomaly-detection-concepts)
-4. [Python/Pandas Basics](#4-pythonpandas-basics)
-5. [Our 4 Models Summary](#5-our-4-models-summary)
-6. [Project Workflow](#6-project-workflow)
+3. [Preprocessing Concepts](#3-preprocessing-concepts)
+4. [Features We Created](#4-features-we-created)
+5. [Anomaly Detection Concepts](#5-anomaly-detection-concepts)
+6. [Python/Pandas Basics](#6-pythonpandas-basics)
+7. [Our 4 Models Summary](#7-our-4-models-summary)
+8. [Project Workflow](#8-project-workflow)
 
 ---
 
@@ -126,9 +128,101 @@ For normally distributed data:
    rare  unusual  normal  unusual  rare
 ```
 
+### Rolling Window
+
+A sliding calculation that moves through your data. At each row, calculate using the last N rows.
+
+**Example with window of 3:**
+```
+Data: [0.1, 0.2, 0.3, 0.4, 0.5]
+
+Row 3: Calculate using [0.1, 0.2, 0.3]
+Row 4: Calculate using [0.2, 0.3, 0.4]
+Row 5: Calculate using [0.3, 0.4, 0.5]
+
+Rows 1-2: NaN (not enough data yet)
+```
+
+### Normalization
+
+Rescaling features to the same range so ML models treat them equally.
+
+**Problem:** Features have different scales
+- return: -2% to +2%
+- volume_ratio: 0.5 to 5.0
+
+**Solution:** Rescale both to similar range (e.g., -1 to +1)
+
 ---
 
-## 3. Anomaly Detection Concepts
+## 3. Preprocessing Concepts
+
+| Term | Definition |
+|------|------------|
+| **Preprocessing** | Cleaning and preparing raw data before giving it to ML models. Like washing and cutting vegetables before cooking. |
+| **Feature** | A measurable property of your data that the model uses to learn |
+| **Feature Engineering** | Creating NEW useful columns from existing data |
+| **Missing Value (NaN)** | A cell with no value. ML models crash on these. Must remove or fill. |
+| **Datetime** | A data type that Python understands as a date/time, not just text |
+
+### Why We Create Features (Not Use Raw Prices)
+
+Raw price ($86,626) is meaningless alone:
+- Is it high? Low? Normal?
+- $1000 move in 2015 (when BTC = $200) is HUGE
+- $1000 move in 2024 (when BTC = $90,000) is normal
+
+Features like "return" are **relative** - they mean the same thing at any price level.
+- 0.5% change is always 0.5%, whether BTC is $100 or $100,000
+
+### Why We Drop First 24 Rows
+
+Rolling window of 24 needs 24 rows of data.
+- Row 1: Need 24, have 1 → NaN
+- Row 2: Need 24, have 2 → NaN
+- ...
+- Row 23: Need 24, have 23 → NaN
+- Row 24: Need 24, have 24 → ✅ First real value
+
+We delete rows with NaN because ML models can't handle them.
+
+---
+
+## 4. Features We Created
+
+| Feature | Formula | What It Measures |
+|---------|---------|------------------|
+| **return** | (current - previous) / previous × 100 | How much price changed this hour (%) |
+| **log_return** | ln(current / previous) × 100 | Same as return, but with better math properties. Can be added across time periods. |
+| **volatility_24h** | std of last 24 returns | How chaotic/stable the last 24 hours were. High = wild market. Low = calm market. |
+| **volume_change** | (current_vol - previous_vol) / previous_vol × 100 | How much trading activity changed from last hour (%) |
+| **volume_ratio** | current_volume / average(last 24h volume) | Current volume compared to what's normal. Value of 2.0 = double normal trading. |
+| **price_range** | (high - low) / close × 100 | How much price swung WITHIN the hour. Catches volatility that return misses. |
+
+### Feature Details
+
+**return vs log_return:**
+- For small changes (<5%), they're almost identical
+- log_return can be added across time (regular return can't)
+- Academic papers prefer log_return
+
+**volatility_24h:**
+- Low (0.3) = calm market
+- High (2.0) = chaotic market
+
+**volume_ratio:**
+- 1.0 = normal volume
+- 2.0 = double normal
+- 5.0 = 5x normal (something big is happening!)
+
+**price_range:**
+- Catches volatility that return misses
+- Example: price goes up $3000 then down $3000 in same hour
+- Return = 0% (looks normal), but price_range = 7% (actually wild!)
+
+---
+
+## 5. Anomaly Detection Concepts
 
 ### What is an Anomaly?
 
@@ -163,7 +257,7 @@ If |Z-score| ≤ 3 → Normal
 | Approach | Method | Limitation |
 |----------|--------|------------|
 | Single-column | Z-Score | Only looks at one variable (e.g., return OR volume) |
-| Multi-column | Isolation Forest, One-Class SVM | Looks at combinations (e.g., return AND volume together) |
+| Multi-column | Isolation Forest, One-Class SVM, LOF | Looks at combinations (e.g., return AND volume together) |
 
 **Why multi-column matters:**
 
@@ -176,7 +270,7 @@ Hour B has **10x normal volume** but small price move. Z-Score misses it because
 
 ---
 
-## 4. Python/Pandas Basics
+## 6. Python/Pandas Basics
 
 ### What is Pandas?
 
@@ -234,18 +328,20 @@ anomalies = btc[abs(btc['z_score']) > 3]
 | `df.min()` | Minimum value |
 | `df.max()` | Maximum value |
 | `df.pct_change()` | Percentage change from previous row |
+| `df.rolling(n)` | Create rolling window of n rows |
+| `df.dropna()` | Remove rows with NaN |
 | `abs(x)` | Absolute value |
 
 ---
 
-## 5. Our 4 Models Summary
+## 7. Our 4 Models Summary
 
 | Model | Type | How it works | Pros | Cons |
 |-------|------|--------------|------|------|
 | **Z-Score** | Statistical | Flag if \|Z-score\| > threshold | Simple, fast, interpretable | Single column only |
 | **Isolation Forest** | Machine Learning | Isolates anomalies by random splits | Multi-column, no assumptions | Less interpretable |
 | **One-Class SVM** | Machine Learning | Learns boundary around normal data | Good for complex patterns | Slow on big data |
-| **Local Outlier Factor (LOF)** | Machine Learning | Compares local density of a point to its neighbors | Finds local anomalies, multi-column | Sensitive to parameters |
+| **LOF** | Machine Learning | Compares local density to neighbors | Finds local anomalies | Sensitive to parameters |
 
 ### How Each Model Thinks
 
@@ -266,35 +362,34 @@ anomalies = btc[abs(btc['z_score']) > 3]
 
 ---
 
-## 6. Project Workflow
+## 8. Project Workflow
 
-### Phase 1: Data Exploration (DONE ✅)
+### Phase 1: Data Collection (DONE ✅)
+
+```
+1. Download data from Binance API
+2. Save to CSV files
+3. 1000 hourly candles for BTC and ETH
+```
+
+### Phase 2: Preprocessing (DONE ✅)
 
 ```
 1. Load data
-2. Check shape, info, describe
-3. Visualize price and volume
-4. Calculate returns
-5. Find anomalies with Z-Score
-6. Understand the data before modeling
+2. Check for missing values
+3. Convert timestamp to datetime
+4. Create 6 features (return, log_return, volatility_24h, volume_change, volume_ratio, price_range)
+5. Drop first 24 rows (NaN from rolling window)
+6. Save processed data
 ```
 
-### Phase 2: Preprocessing (NEXT)
+### Phase 3: Modeling (NEXT)
 
 ```
-1. Handle missing values
-2. Convert timestamp to datetime
-3. Create features (return, volatility, volume change, etc.)
-4. Normalize/scale data for ML models
-```
-
-### Phase 3: Modeling
-
-```
-1. Implement Z-Score detector
-2. Implement Isolation Forest
-3. Implement One-Class SVM
-4. Implement LSTM Autoencoder
+1. Implement Isolation Forest
+2. Implement One-Class SVM
+3. Implement LOF
+4. Compare all models
 ```
 
 ### Phase 4: Evaluation
@@ -303,7 +398,7 @@ anomalies = btc[abs(btc['z_score']) > 3]
 1. Compare models on same data
 2. Measure: precision, recall, F1-score
 3. Visualize detected anomalies
-4. Choose best model for real-time use
+4. Choose best model
 ```
 
 ### Phase 5: Streaming (Kafka + Spark)
@@ -347,13 +442,8 @@ anomalies = btc[abs(btc['z_score']) > 3]
 ## Terms We'll Add Later
 
 As we progress, we'll add:
-- Feature Engineering terms
 - Isolation Forest specific terms (contamination, n_estimators)
 - SVM terms (kernel, hyperplane, nu parameter)
 - LOF terms (n_neighbors, local density, reachability distance)
 - Kafka/Spark streaming terms
 - Evaluation metrics (precision, recall, F1)
-
----
-
-*Document maintained by Team A*

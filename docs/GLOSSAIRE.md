@@ -1,163 +1,349 @@
-# 📚 Glossary - Terms to Know
+# Anomaly Detection Project - Glossary & Key Concepts
 
-## Trading & Markets
+> **Purpose**: Quick reference for the team. Read this before diving into the code.
+> 
+> **Last updated**: January 2026
 
-### Trading
-Buying something cheap, selling it expensive, keeping the difference.
+---
+
+## Table of Contents
+
+1. [Data Concepts](#1-data-concepts)
+2. [Statistics Concepts](#2-statistics-concepts)
+3. [Anomaly Detection Concepts](#3-anomaly-detection-concepts)
+4. [Python/Pandas Basics](#4-pythonpandas-basics)
+5. [Our 4 Models Summary](#5-our-4-models-summary)
+6. [Project Workflow](#6-project-workflow)
+
+---
+
+## 1. Data Concepts
+
+### OHLCV Data
+
+Financial market data format. Each row = one time period (we use 1 hour).
+
+| Column | Meaning | Example |
+|--------|---------|---------|
+| **O**pen | Price at START of the hour | $87,000 |
+| **H**igh | HIGHEST price during the hour | $87,500 |
+| **L**ow | LOWEST price during the hour | $86,800 |
+| **C**lose | Price at END of the hour | $87,200 |
+| **V**olume | How much was traded | 500 BTC |
+
+### Candlestick
+
+One row of OHLCV data. Called "candlestick" because of how it's visualized in trading charts.
+
+### Return (Price Change)
+
+How much the price changed from the previous period, as a percentage.
+
+```
+return = (current_price - previous_price) / previous_price × 100
+```
 
 **Example:**
-- Buy 1 Bitcoin at $80,000
-- Sell 1 Bitcoin at $85,000
-- Profit: $5,000
+- Hour 1 close: $90,000
+- Hour 2 close: $91,800
+- Return = (91,800 - 90,000) / 90,000 × 100 = **+2%**
 
-### Financial Market
-A place where people buy and sell assets.
-- **Binance** = A market for cryptocurrencies
-- Thousands of transactions happen every second
-
-### Transaction
-When a buyer and seller agree on a price and exchange happens.
+**Why use returns instead of raw price?**
+- Raw price going from $90,000 to $95,000 over a month = normal
+- Raw price going from $90,000 to $95,000 in 1 hour = anomaly
+- Returns capture the **speed** of change, which is what matters for anomaly detection
 
 ---
 
-## Price Data Concepts
+## 2. Statistics Concepts
 
-### OHLCV
-A summary of price movement over a time period (5 values):
+### Mean (Average)
 
-| Letter | Name | Meaning |
-|--------|------|---------|
-| **O** | Open | Price at the START of the period |
-| **H** | High | HIGHEST price during the period |
-| **L** | Low | LOWEST price during the period |
-| **C** | Close | Price at the END of the period |
-| **V** | Volume | Quantity traded during the period |
+Sum of all values divided by count.
 
-### Candle (Kline)
-A visual representation of OHLCV data.
 ```
-         High
-          │
-      ┌───┴───┐
-      │       │ ← Body (between Open and Close)
-      └───┬───┘
-          │
-         Low
+Values: 100, 150, 200, 250, 300
+Mean = (100 + 150 + 200 + 250 + 300) / 5 = 200
 ```
 
-- **Green candle** = Price went UP (Close > Open)
-- **Red candle** = Price went DOWN (Close < Open)
+### Standard Deviation (std)
 
-### Interval (Timeframe)
-The duration of each candle:
-- `1m` = 1 minute
-- `5m` = 5 minutes
-- `15m` = 15 minutes
-- `1h` = 1 hour
-- `4h` = 4 hours
-- `1d` = 1 day
+**Simple definition:** How spread out the data is. The average distance from the mean.
 
-### Volume
-The quantity of an asset traded during a period.
-- **High volume** = Many people trading → Price movement is "serious"
-- **Low volume** = Few people trading → Price can be easily manipulated
+**Low std** = values clustered close to mean (predictable)
+**High std** = values spread far from mean (volatile)
+
+**Example:**
+```
+Class A scores: 78, 80, 79, 81, 80  → Mean=80, Std≈1 (consistent)
+Class B scores: 50, 95, 70, 100, 60 → Mean=75, Std≈20 (all over the place)
+```
+
+### Z-Score
+
+**Definition:** How many standard deviations a value is from the mean.
+
+**Formula:**
+```
+Z-score = (value - mean) / std
+```
+
+**Example with our BTC data:**
+- Mean return = 0%
+- Std return = 0.39%
+- One hour had return = -2.97%
+
+```
+Z-score = (-2.97 - 0) / 0.39 = -7.6
+```
+
+This means: that hour's return was **7.6 standard deviations below average**. Extremely unusual.
+
+**Interpretation:**
+
+| Z-score | Meaning |
+|---------|---------|
+| 0 | Exactly average |
+| ±1 | Normal (68% of data is here) |
+| ±2 | Unusual but happens (95% of data within this) |
+| ±3 | Rare (99.7% of data within this) |
+| Beyond ±3 | **Very rare → Likely anomaly** |
+
+### The 68-95-99.7 Rule
+
+For normally distributed data:
+- 68% of values are within ±1 std of mean
+- 95% of values are within ±2 std of mean
+- 99.7% of values are within ±3 std of mean
+
+```
+         |------ 68% ------|
+         |------- 95% --------|
+         |-------- 99.7% --------|
+         
+    -3   -2   -1    0    1    2    3   (Z-scores)
+     |    |    |    |    |    |    |
+   rare  unusual  normal  unusual  rare
+```
 
 ---
 
-## Symbols
+## 3. Anomaly Detection Concepts
 
-### BTCUSDT
-- **BTC** = Bitcoin (what you buy)
-- **USDT** = Tether/Dollar (what you pay with)
-- **BTCUSDT** = Price of Bitcoin in dollars
+### What is an Anomaly?
 
-### Other Examples
-- `ETHUSDT` = Ethereum in dollars
-- `BNBUSDT` = Binance Coin in dollars
+A data point that is **significantly different** from the normal pattern. Also called: outlier, outlying observation, exception.
+
+**Examples in crypto markets:**
+- Sudden price crash (-3% in one hour)
+- Sudden price spike (+2.5% in one hour)  
+- Extremely high volume (10x normal)
+- High volume with no price movement (unusual combination)
+
+### Threshold
+
+The cutoff value we choose to decide "normal" vs "anomaly".
+
+**Common choice:** Z-score threshold of 3
+
+```
+If |Z-score| > 3 → Anomaly
+If |Z-score| ≤ 3 → Normal
+```
+
+**Why 3?** It's a convention. Only 0.3% of normal data exceeds this, so anything beyond is likely unusual.
+
+**You can adjust it:**
+- Threshold = 2 → Catch more anomalies (but more false positives)
+- Threshold = 3 → Standard balance
+- Threshold = 4 → Only extreme cases (might miss some)
+
+### Single-Column vs Multi-Column Detection
+
+| Approach | Method | Limitation |
+|----------|--------|------------|
+| Single-column | Z-Score | Only looks at one variable (e.g., return OR volume) |
+| Multi-column | Isolation Forest, One-Class SVM | Looks at combinations (e.g., return AND volume together) |
+
+**Why multi-column matters:**
+
+| Hour | Return | Volume | Z-Score (return) | Unusual? |
+|------|--------|--------|------------------|----------|
+| A | +0.5% | 500 | 1.2 | Looks normal |
+| B | +0.5% | 5000 | 1.2 | Looks normal |
+
+Hour B has **10x normal volume** but small price move. Z-Score misses it because it only checks return. Isolation Forest would catch it because the **combination** is unusual.
 
 ---
 
-## API Concepts
+## 4. Python/Pandas Basics
 
-### API (Application Programming Interface)
-A way for programs to communicate with each other.
+### What is Pandas?
 
-**Analogy:**
-```
-You (client) → Waiter (API) → Kitchen (Binance)
-"I want BTC    Transmits      Prepares
- price"        your request   the data
-```
+Python library for data manipulation. Think of it like SQL tables in memory.
 
-### REST API
-- You request → You get a response → Connection closes
-- **Use case:** Fetch historical data
-
-### WebSocket
-- Connection opens → Stays open → Server pushes data to you
-- **Use case:** Real-time streaming
-
-### Endpoint
-A specific URL path for a resource in the API.
-- `/api/v3/ticker/price` = Get current price
-- `/api/v3/klines` = Get historical candles
-
-### HTTP Status Codes
-| Code | Meaning |
-|------|---------|
-| 200 | OK - Success ✅ |
-| 400 | Bad Request - Your request is malformed |
-| 403 | Forbidden - Access denied |
-| 404 | Not Found - Endpoint doesn't exist |
-| 429 | Too Many Requests - Rate limit exceeded |
-| 500 | Server Error - Binance's problem |
-
----
-
-## Python / Pandas Concepts
-
-### Pandas
-A Python library for data manipulation. Like Excel but in code.
-```python
-import pandas as pd  # "pd" is the universal alias
-```
+**Java equivalent:** Like working with a database ResultSet, but much easier.
 
 ### DataFrame
-A table (rows and columns) in Pandas.
-```
-   timestamp      open      high       low     close    volume
-0  2025-12-17  86752.27  86756.74  86209.11  86626.39  634.29
-1  2025-12-17  86626.40  87005.27  86587.82  86777.98  454.66
-```
 
-| Term | Meaning |
-|------|---------|
-| **Row** | One horizontal line (one candle) |
-| **Column** | One vertical line (e.g., all "open" prices) |
-| **Index** | Row number (0, 1, 2...) |
+A table with rows and columns. Our `btc` variable is a DataFrame.
 
-### Common DataFrame Operations
-
-| Code | What it does |
-|------|--------------|
-| `pd.DataFrame(data)` | Create a table |
-| `df[['col1', 'col2']]` | Select columns |
-| `df['col'].astype(float)` | Convert to numbers |
-| `df.head(10)` | Show first 10 rows |
-| `df.describe()` | Show statistics |
-| `df.to_csv('file.csv')` | Save to CSV file |
-
-### CSV (Comma Separated Values)
-A simple file format for tables.
-```
-timestamp,open,high,low,close,volume
-2025-12-17,86752.27,86756.74,86209.11,86626.39,634.29
+```python
+btc = pd.read_csv('BTCUSDT_1h.csv')  # Load CSV into DataFrame
+btc.head()      # Show first 5 rows
+btc.tail()      # Show last 5 rows
+btc.shape       # (rows, columns) → (1000, 6)
+btc.info()      # Column names and types
+btc.describe()  # Statistics for each column
 ```
 
-### Data Types
-| Type | Example | Description |
-|------|---------|-------------|
-| `string` | `"86752.27"` | Text (can't do math) |
-| `float` | `86752.27` | Decimal number (can do math) |
-| `int` | `86752` | Whole number |
-| `datetime` | `2025-12-17 05:00:00` | Date and time |
+### Selecting Columns
+
+```python
+btc['close']              # One column (returns a Series)
+btc[['close', 'volume']]  # Multiple columns (returns DataFrame)
+```
+
+### Creating New Columns
+
+```python
+btc['return'] = btc['close'].pct_change() * 100
+btc['z_score'] = (btc['return'] - btc['return'].mean()) / btc['return'].std()
+```
+
+### Filtering Rows
+
+**Java way:**
+```java
+List<Row> anomalies = data.stream()
+    .filter(row -> Math.abs(row.zScore) > 3)
+    .collect(Collectors.toList());
+```
+
+**Pandas way:**
+```python
+anomalies = btc[abs(btc['z_score']) > 3]
+```
+
+### Common Functions
+
+| Function | What it does |
+|----------|--------------|
+| `df.mean()` | Average of each column |
+| `df.std()` | Standard deviation of each column |
+| `df.min()` | Minimum value |
+| `df.max()` | Maximum value |
+| `df.pct_change()` | Percentage change from previous row |
+| `abs(x)` | Absolute value |
+
+---
+
+## 5. Our 4 Models Summary
+
+| Model | Type | How it works | Pros | Cons |
+|-------|------|--------------|------|------|
+| **Z-Score** | Statistical | Flag if \|Z-score\| > threshold | Simple, fast, interpretable | Single column only |
+| **Isolation Forest** | Machine Learning | Isolates anomalies by random splits | Multi-column, no assumptions | Less interpretable |
+| **One-Class SVM** | Machine Learning | Learns boundary around normal data | Good for complex patterns | Slow on big data |
+| **LSTM Autoencoder** | Deep Learning | Learns to reconstruct normal data, flags high reconstruction error | Captures time patterns | Complex, needs more data |
+
+### When to Use What
+
+- **Z-Score**: Quick check, single variable, need to explain results
+- **Isolation Forest**: Multiple variables, don't know what anomalies look like
+- **One-Class SVM**: Clear boundary between normal/abnormal
+- **LSTM Autoencoder**: Time patterns matter (e.g., anomaly is a sequence of events)
+
+---
+
+## 6. Project Workflow
+
+### Phase 1: Data Exploration (DONE ✅)
+
+```
+1. Load data
+2. Check shape, info, describe
+3. Visualize price and volume
+4. Calculate returns
+5. Find anomalies with Z-Score
+6. Understand the data before modeling
+```
+
+### Phase 2: Preprocessing (NEXT)
+
+```
+1. Handle missing values
+2. Convert timestamp to datetime
+3. Create features (return, volatility, volume change, etc.)
+4. Normalize/scale data for ML models
+```
+
+### Phase 3: Modeling
+
+```
+1. Implement Z-Score detector
+2. Implement Isolation Forest
+3. Implement One-Class SVM
+4. Implement LSTM Autoencoder
+```
+
+### Phase 4: Evaluation
+
+```
+1. Compare models on same data
+2. Measure: precision, recall, F1-score
+3. Visualize detected anomalies
+4. Choose best model for real-time use
+```
+
+### Phase 5: Streaming (Kafka + Spark)
+
+```
+1. Set up Kafka producer (sends live data)
+2. Set up Spark Streaming consumer
+3. Apply trained model in real-time
+4. Generate alerts
+```
+
+---
+
+## Quick Reference Card
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                   ANOMALY DETECTION                      │
+├─────────────────────────────────────────────────────────┤
+│                                                          │
+│  Z-Score = (value - mean) / std                         │
+│                                                          │
+│  If |Z-Score| > 3 → ANOMALY                             │
+│                                                          │
+│  ──────────────────────────────────────────────────     │
+│     -3      -2      -1       0       1       2       3  │
+│      │       │       │       │       │       │       │  │
+│    ANOMALY         NORMAL              NORMAL    ANOMALY │
+│                                                          │
+├─────────────────────────────────────────────────────────┤
+│  Our Data (BTC hourly):                                 │
+│  • Mean return: ~0%                                     │
+│  • Std return: ~0.39%                                   │
+│  • Anomaly threshold: ±1.17% (3 × 0.39)                │
+│  • Found: 20 anomalies in 1000 hours (2%)              │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Terms We'll Add Later
+
+As we progress, we'll add:
+- Feature Engineering terms
+- Isolation Forest specific terms
+- SVM terms (kernel, hyperplane)
+- LSTM terms (sequence, hidden state, reconstruction error)
+- Kafka/Spark streaming terms
+- Evaluation metrics (precision, recall, F1)
+
+---
+
+*Document maintained by Team A*

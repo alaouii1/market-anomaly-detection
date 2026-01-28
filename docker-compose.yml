@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  jupyter:
+    image: jupyter/scipy-notebook:latest
+    container_name: jupyter
+    ports:
+      - "8888:8888"
+    volumes:
+      - .:/home/jovyan/work
+    environment:      
+      - JUPYTER_TOKEN=anomaly
+    restart: unless-stopped
+
+# =============================================================
+# WHAT THIS DOES:
+# =============================================================
+# 
+# 1. Uses official Jupyter image with scipy (includes pandas, numpy, matplotlib, seaborn, scikit-learn)
+# 
+# 2. Maps port 8888 - you'll access Jupyter at http://localhost:8888
+# 
+# 3. Mounts current folder (.) to /home/jovyan/work inside container
+#    - Your data/raw/ folder will be accessible
+#    - Your notebooks/ folder will be accessible
+#    - Any file you create in Jupyter is saved to your actual project folder
+# 
+# 4. Sets a simple password: "anomaly" (instead of random token)
+# 
+# =============================================================
+# HOW TO USE:
+# =============================================================
+# 
+# 1. Put this file in your project root (market-anomaly-detection/)
+# 
+# 2. Start Jupyter:
+#    docker-compose up
+# 
+# 3. Open browser:
+#    http://localhost:8888
+# 
+# 4. Enter password:
+#    anomaly
+# 
+# 5. Navigate to work/ folder - that's your project
+# 
+# 6. To stop:
+#    Ctrl+C in terminal, then: docker-compose down
+# 
+# =============================================================

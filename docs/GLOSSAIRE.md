@@ -245,14 +245,24 @@ anomalies = btc[abs(btc['z_score']) > 3]
 | **Z-Score** | Statistical | Flag if \|Z-score\| > threshold | Simple, fast, interpretable | Single column only |
 | **Isolation Forest** | Machine Learning | Isolates anomalies by random splits | Multi-column, no assumptions | Less interpretable |
 | **One-Class SVM** | Machine Learning | Learns boundary around normal data | Good for complex patterns | Slow on big data |
-| **LSTM Autoencoder** | Deep Learning | Learns to reconstruct normal data, flags high reconstruction error | Captures time patterns | Complex, needs more data |
+| **Local Outlier Factor (LOF)** | Machine Learning | Compares local density of a point to its neighbors | Finds local anomalies, multi-column | Sensitive to parameters |
+
+### How Each Model Thinks
+
+**Z-Score**: "How far is this value from the average?"
+
+**Isolation Forest**: "How easy is it to isolate this point?" (Anomalies are easier to isolate)
+
+**One-Class SVM**: "Is this point inside or outside the boundary of normal data?"
+
+**LOF**: "Is this point in a less dense area compared to its neighbors?"
 
 ### When to Use What
 
 - **Z-Score**: Quick check, single variable, need to explain results
 - **Isolation Forest**: Multiple variables, don't know what anomalies look like
 - **One-Class SVM**: Clear boundary between normal/abnormal
-- **LSTM Autoencoder**: Time patterns matter (e.g., anomaly is a sequence of events)
+- **LOF**: Data has varying densities, want to find local anomalies
 
 ---
 
@@ -338,9 +348,9 @@ anomalies = btc[abs(btc['z_score']) > 3]
 
 As we progress, we'll add:
 - Feature Engineering terms
-- Isolation Forest specific terms
-- SVM terms (kernel, hyperplane)
-- LSTM terms (sequence, hidden state, reconstruction error)
+- Isolation Forest specific terms (contamination, n_estimators)
+- SVM terms (kernel, hyperplane, nu parameter)
+- LOF terms (n_neighbors, local density, reachability distance)
 - Kafka/Spark streaming terms
 - Evaluation metrics (precision, recall, F1)
 

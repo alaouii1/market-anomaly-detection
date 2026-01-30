@@ -122,8 +122,164 @@ market-anomaly-detection/
 
 ---
 
+## Session 3 - [30/01/2026]
+
+### What We Did
+- [x] Studied example papers from professor (Smart Grid, CKD Prediction, Tesla Sentiment)
+- [x] Decided to use 100% Spark MLlib (no sklearn) based on professor's examples
+- [x] Changed from Isolation Forest to K-Means (Isolation Forest not in Spark MLlib)
+- [x] Implemented 4 anomaly detection methods using Spark MLlib
+- [x] Created separate notebook for each algorithm (clean architecture)
+- [x] Ran all notebooks successfully
+- [x] Generated final results with 30 anomalies detected (3.07%)
+- [x] Created cheat sheet to understand each algorithm
+
+### What We Learned
+
+#### Why 100% Spark MLlib?
+- Professor's example papers all use Spark MLlib
+- Even with small data (400 rows in CKD example), they used Spark
+- Course is about Big Data → Must use Big Data tools
+- Same code scales from 1,000 to 1,000,000,000 rows
+
+#### The 4 Methods Implemented
+
+| # | Method | Type | How It Detects Anomalies | Spark Component |
+|---|--------|------|--------------------------|-----------------|
+| 1 | Z-Score | Statistical | Points far from the mean (\|z\| > 3) | pyspark.sql.functions |
+| 2 | K-Means | Clustering | Points far from cluster centers | pyspark.ml.clustering.KMeans |
+| 3 | Random Forest | Classification | Learns patterns from K-Means labels | pyspark.ml.classification.RandomForestClassifier |
+| 4 | GMM | Probabilistic | Points with low probability | pyspark.ml.clustering.GaussianMixture |
+
+#### Key Concepts Learned
+
+**Z-Score:**
+- Formula: (value - mean) / standard_deviation
+- |Z| > 3 means point is in 0.3% most extreme values
+- Weakness: Looks at each feature independently
+
+**K-Means:**
+- Groups similar points into K clusters
+- Anomaly = point far from any cluster center
+- Threshold: distance > mean + 2*stddev
+
+**Random Forest:**
+- 100 decision trees vote together
+- Semi-supervised: Uses K-Means labels for training
+- Gives feature importance (which features matter most)
+
+**GMM (Gaussian Mixture Model):**
+- Like K-Means but with soft probabilities
+- Each point gets probability of belonging to data
+- Anomaly = low probability (bottom 5%)
+
+**Consensus Approach:**
+- Each method has blind spots
+- When 2+ methods agree → High confidence anomaly
+- Better than relying on single method
+
+### Files Created
+```
+market-anomaly-detection/
+├── notebooks/
+│   ├── 03_zscore.ipynb           # Z-Score method
+│   ├── 04_kmeans.ipynb           # K-Means method
+│   ├── 05_random_forest.ipynb    # Random Forest method
+│   ├── 06_gmm.ipynb              # GMM method
+│   └── 07_comparison.ipynb       # Compare all methods
+├── data/
+│   └── results/
+│       ├── zscore_results/       # Z-Score output
+│       ├── kmeans_results/       # K-Means output
+│       ├── rf_results/           # Random Forest output
+│       ├── gmm_results/          # GMM output
+│       └── final_results/        # Combined results with consensus
+├── docker-compose.yml            # Updated for PySpark
+└── docs/
+    └── ANOMALY_DETECTION_CHEAT_SHEET.md  # Study guide
+```
+
+### Results Achieved
+
+| Metric | Value |
+|--------|-------|
+| Total data points | 976 |
+| Anomalies detected | 30 |
+| Anomaly rate | 3.07% |
+| Method | Consensus (2+ votes) |
+
+**Anomalies per method:**
+| Method | Anomalies | Percentage |
+|--------|-----------|------------|
+| Z-Score | ~35 | ~3.6% |
+| K-Means | ~40 | ~4.1% |
+| Random Forest | ~40 | ~4.1% |
+| GMM | ~49 | ~5.0% |
+| **Consensus (2+)** | **30** | **3.07%** |
+
+**Sample anomalies found:**
+- 2025-12-18 13:00 → Return +1.82% (big price spike)
+- 2025-12-18 17:00 → Return -1.74% (sharp drop)
+- 2025-12-18 19:00 → Return -1.73% (another drop)
+- 2025-12-18 21:00 → Return +1.24% (recovery)
+
+### Key Decisions Made
+1. **100% Spark MLlib** → No sklearn, no pandas in ML code
+2. **4 methods instead of original plan** → K-Means replaces Isolation Forest, GMM replaces One-Class SVM
+3. **Separate notebooks** → One per algorithm (clean architecture)
+4. **Consensus voting** → 2+ methods must agree for anomaly
+5. **Threshold choices:**
+   - Z-Score: |z| > 3
+   - K-Means: distance > mean + 2*std
+   - GMM: probability < 5th percentile
+
+### Problems Encountered
+1. **Isolation Forest not in Spark MLlib** → Switched to K-Means
+2. **One-Class SVM not in Spark MLlib** → Switched to GMM
+3. **Confusion about scalability** → Clarified that Spark is required even for small data (course requirement)
+
+---
+
+## Project Status Summary
+
+### ✅ COMPLETED
+
+| Phase | Task | Status |
+|-------|------|--------|
+| Setup | GitHub repo | ✅ |
+| Setup | Docker environment | ✅ |
+| Data | Collect from Binance API | ✅ |
+| Data | Preprocessing & feature engineering | ✅ |
+| Models | Z-Score implementation | ✅ |
+| Models | K-Means implementation | ✅ |
+| Models | Random Forest implementation | ✅ |
+| Models | GMM implementation | ✅ |
+| Models | Comparison & consensus | ✅ |
+| Results | Final anomaly detection | ✅ |
+
+### 📝 TODO (Before Feb 15)
+
+| Task | Priority | Estimated Time |
+|------|----------|----------------|
+| Write paper (IEEE format) | HIGH | 2-3 days |
+| Add visualizations (price chart with anomalies) | MEDIUM | 1 day |
+| Run on ETH data (currently only BTC) | LOW | 30 min |
+| Clean up code & comments | LOW | 1 hour |
+| Prepare presentation | HIGH | 1 day |
+
+### 🔮 OPTIONAL (If Time Permits)
+
+| Task | Description |
+|------|-------------|
+| Real-time system | WebSocket → Kafka → Spark Streaming |
+| More cryptocurrencies | Add XRPUSDT, SOLUSDT, etc. |
+| Hyperparameter tuning | Optimize K, threshold values |
+| More visualizations | Confusion matrix, ROC curves |
+
+---
+
 ## Next Session Tasks
-- [ ] Implement Isolation Forest model
-- [ ] Understand how Isolation Forest works
-- [ ] Detect anomalies in BTC data
-- [ ] Visualize anomalies on price chart
+- [ ] Write paper introduction
+- [ ] Create architecture diagram for paper
+- [ ] Add visualizations (price chart with anomalies marked)
+- [ ] Prepare answers for professor's questions

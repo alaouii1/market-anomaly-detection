@@ -1,50 +1,136 @@
+# =============================================================================
+# UNIFIED DOCKER COMPOSE - Real-Time Market Anomaly Detection
+# =============================================================================
+#
+# All services on one network so they can communicate:
+#
+#   ┌─────────────────────────────────────────────────────────────────────┐
+#   │                      anomaly-network                                │
+#   │                                                                     │
+#   │  ┌─────────────┐    ┌─────────────┐    ┌─────────────────────────┐ │
+#   │  │   Kafka     │    │  Kafka UI   │    │        Jupyter          │ │
+#   │  │  (broker)   │◄──►│             │    │  (PySpark + Producer)   │ │
+#   │  │             │    │             │    │                         │ │
+#   │  │ HOST: 9092  │    │   :8080     │    │        :8888            │ │
+#   │  │ DOCKER:9093 │◄───┼─────────────┼────┤  connects via           │ │
+#   │  │             │    │             │    │  broker:9093            │ │
+#   │  └─────────────┘    └─────────────┘    └─────────────────────────┘ │
+#   │        ▲                                                           │
+#   └────────┼───────────────────────────────────────────────────────────┘
+#            │
+#    Your laptop connects via localhost:9092 (if needed)
+#
+# =============================================================================
+# COMMANDS
+# =============================================================================
+#
+#   Start all:     docker-compose up -d
+#   Stop all:      docker-compose down
+#   View logs:     docker-compose logs -f
+#   Status:        docker-compose ps
+#
+# =============================================================================
+# ACCESS POINTS
+# =============================================================================
+#
+#   Jupyter:       http://localhost:8888  (password: anomaly)
+#   Kafka UI:      http://localhost:8080
+#   Kafka:         localhost:9092 (from laptop)
+#                  broker:9093 (from other containers)
+#
+# =============================================================================
+
 version: '3.8'
 
 services:
+  # ---------------------------------------------------------------------------
+  # JUPYTER + PYSPARK
+  # ---------------------------------------------------------------------------
+  # Your development environment with:
+  #   - Python, PySpark
+  #   - Pandas, NumPy, Matplotlib
+  #   - We'll install kafka-python and websocket-client inside
+  # ---------------------------------------------------------------------------
   jupyter:
     image: jupyter/pyspark-notebook:latest
     container_name: jupyter
     ports:
       - "8888:8888"
     volumes:
+      # Mount project folder → accessible at /home/jovyan/work in container
       - .:/home/jovyan/work
-    environment:      
+    environment:
       - JUPYTER_TOKEN=anomaly
+    networks:
+      - anomaly-network  # <-- IMPORTANT: Same network as Kafka!
     restart: unless-stopped
+    depends_on:
+      broker:
+        condition: service_healthy  # Wait for Kafka to be ready
 
-# =============================================================
-# WHAT THIS DOES:
-# =============================================================
-# 
-# 1. Uses official Jupyter image with scipy (includes pandas, numpy, matplotlib, seaborn, scikit-learn)
-# 
-# 2. Maps port 8888 - you'll access Jupyter at http://localhost:8888
-# 
-# 3. Mounts current folder (.) to /home/jovyan/work inside container
-#    - Your data/raw/ folder will be accessible
-#    - Your notebooks/ folder will be accessible
-#    - Any file you create in Jupyter is saved to your actual project folder
-# 
-# 4. Sets a simple password: "anomaly" (instead of random token)
-# 
-# =============================================================
-# HOW TO USE:
-# =============================================================
-# 
-# 1. Put this file in your project root (market-anomaly-detection/)
-# 
-# 2. Start Jupyter:
-#    docker-compose up
-# 
-# 3. Open browser:
-#    http://localhost:8888
-# 
-# 4. Enter password:
-#    anomaly
-# 
-# 5. Navigate to work/ folder - that's your project
-# 
-# 6. To stop:
-#    Ctrl+C in terminal, then: docker-compose down
-# 
-# =============================================================
+  # ---------------------------------------------------------------------------
+  # KAFKA BROKER (KRaft Mode)
+  # ---------------------------------------------------------------------------
+  broker:
+    image: apache/kafka:latest
+    container_name: broker
+    ports:
+      - "9092:9092"
+    environment:
+      # KRaft config
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@broker:9091
+      
+      # Listeners
+      KAFKA_LISTENERS: CONTROLLER://0.0.0.0:9091,HOST://0.0.0.0:9092,DOCKER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: HOST://localhost:9092,DOCKER://broker:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,HOST:PLAINTEXT,DOCKER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: DOCKER
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      
+      # Topic defaults
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - anomaly-network
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # KAFKA UI
+  # ---------------------------------------------------------------------------
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: anomaly-detection
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: broker:9093
+    networks:
+      - anomaly-network
+    depends_on:
+      broker:
+        condition: service_healthy
+
+# =============================================================================
+# VOLUMES & NETWORKS
+# =============================================================================
+
+volumes:
+  kafka_data:
+    driver: local
+
+networks:
+  anomaly-network:
+    driver: bridge

@@ -1,2 +1,4 @@
 requests
 pandas
+websocket-client
+kafka-python

@@ -1,0 +1,90 @@
+{
+    "_description": "Model parameters extracted from batch training for use in real-time streaming",
+    "_created": "2026-01-31",
+    "_data_source": "BTCUSDT 1h candles (976 samples)",
+    
+    "features": {
+        "columns": ["return", "log_return", "volatility_24h", "volume_change", "volume_ratio", "price_range"],
+        "description": {
+            "return": "(close - open) / open * 100",
+            "log_return": "log(close / open) * 100", 
+            "volatility_24h": "rolling 24h std of returns (need history)",
+            "volume_change": "(volume - prev_volume) / prev_volume * 100 (need previous)",
+            "volume_ratio": "volume / rolling_24h_avg (need history)",
+            "price_range": "(high - low) / low * 100"
+        },
+        "realtime_available": ["return", "log_return", "price_range"],
+        "need_history": ["volatility_24h", "volume_change", "volume_ratio"]
+    },
+    
+    "zscore": {
+        "_method": "Statistical: |z-score| > threshold = anomaly",
+        "threshold": 3.0,
+        "statistics": {
+            "return": {
+                "mean": 0.0034,
+                "std": 0.3741
+            },
+            "log_return": {
+                "mean": 0.0027,
+                "std": 0.3744
+            },
+            "volatility_24h": {
+                "mean": 0.3424,
+                "std": 0.1689
+            },
+            "volume_change": {
+                "mean": 20.9250,
+                "std": 93.3035
+            },
+            "volume_ratio": {
+                "mean": 1.0466,
+                "std": 0.9030
+            },
+            "price_range": {
+                "mean": 0.4972,
+                "std": 0.3956
+            }
+        }
+    },
+    
+    "kmeans": {
+        "_method": "Clustering: distance to centroid > threshold = anomaly",
+        "n_clusters": 3,
+        "distance_threshold": 3.6642,
+        "distance_stats": {
+            "mean": 1.6190,
+            "std": 1.0226
+        },
+        "_note": "Threshold = mean + 2*std. Centroids are in scaled space, need StandardScaler"
+    },
+    
+    "random_forest": {
+        "_method": "Classification: trained on K-Means labels",
+        "_note": "RF model cannot be easily exported. Use K-Means labels for streaming.",
+        "trees": 100,
+        "max_depth": 5
+    },
+    
+    "gmm": {
+        "_method": "Probabilistic: probability < threshold = anomaly",
+        "n_components": 3,
+        "probability_threshold_percentile": 10,
+        "_note": "Threshold is 10th percentile of max_probability. GMM params complex to export."
+    },
+    
+    "consensus": {
+        "_method": "Vote: 2+ models agree = high-confidence anomaly",
+        "min_votes": 2,
+        "models_used": ["zscore", "kmeans", "gmm"]
+    },
+    
+    "streaming_simplified": {
+        "_description": "Simplified thresholds for real-time use (based on batch analysis)",
+        "return_threshold_pct": 1.0,
+        "log_return_threshold_pct": 1.0,
+        "price_range_threshold_pct": 1.5,
+        "volume_spike_threshold_pct": 200,
+        "_rationale": "Approx 3 std deviations from mean for each feature"
+    }
+}

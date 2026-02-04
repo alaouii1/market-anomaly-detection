@@ -1,0 +1,12 @@
+{
+  "feature_columns": [
+    "return",
+    "log_return",
+    "volatility",
+    "volume_change",
+    "volume_ratio",
+    "price_range"
+  ],
+  "zscore_threshold": 3.0,
+  "consensus_threshold": 2
+}

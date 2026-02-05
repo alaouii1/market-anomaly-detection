@@ -34,7 +34,7 @@ Usage:
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col, from_json, abs as abs_, when, lit, round as round_,
-    log, current_timestamp, concat_ws
+    log, current_timestamp, concat_ws, window, mean, stddev, max, last
 )
 from pyspark.sql.types import (
     StructType, StructField, StringType, DoubleType, LongType,
@@ -52,31 +52,57 @@ KAFKA_TOPIC = "crypto-candles"
 CHECKPOINT_DIR = "/tmp/spark-checkpoint/anomaly-detection-v2"
 OUTPUT_PATH = "/home/jovyan/work/data/results/streaming_anomalies"
 
+
 # =============================================================================
-# MODEL PARAMETERS (from batch training)
+# MODEL PARAMETERS (Dynamic Load)
 # =============================================================================
-# These are extracted from notebooks: 03_zscore.ipynb, 04_kmeans.ipynb, etc.
 
-# Z-Score parameters (from batch statistics)
-ZSCORE_THRESHOLD = 3.0
-ZSCORE_STATS = {
-    "return": {"mean": 0.0034, "std": 0.3741},
-    "log_return": {"mean": 0.0027, "std": 0.3744},
-    "price_range": {"mean": 0.4972, "std": 0.3956}
-}
+def load_model_params(file_path="models/model_params.json"):
+    """Load model parameters from JSON file."""
+    if not os.path.exists(file_path):
+        print(f"⚠️ WARNING: Config file not found at {file_path}")
+        print("   Using fallback/default values (NOT RECOMMENDED for production)")
+        return None
+        
+    try:
+        with open(file_path, 'r') as f:
+            params = json.load(f)
+        print(f"✅ Loaded model parameters from {file_path}")
+        print(f"   Created: {params.get('_created', 'Unknown date')}")
+        return params
+    except Exception as e:
+        print(f"❌ Error loading config: {e}")
+        return None
 
-# K-Means simplified: volume spike detection
-# From batch: volume_change mean=20.93, std=93.30
-# Threshold ~= mean + 2*std ≈ 200%
-VOLUME_SPIKE_THRESHOLD = 200.0  # percent
+# Load params
+PARAMS = load_model_params()
 
-# GMM simplified: high volatility detection  
-# From batch: price_range mean=0.50, std=0.40
-# Threshold ~= mean + 2.5*std ≈ 1.5%
-VOLATILITY_THRESHOLD = 1.5  # percent
+# Set globals from loaded params or fallbacks
+if PARAMS:
+    # Z-Score Stats
+    ZSCORE_STATS = PARAMS["zscore"]["statistics"]
+    ZSCORE_THRESHOLD = PARAMS["zscore"]["threshold"]
+    
+    # Simplified Thresholds from 'streaming_simplified' section
+    # If not present, derive from zscore stats roughly
+    simple = PARAMS.get("streaming_simplified", {})
+    VOLUME_SPIKE_THRESHOLD = simple.get("volume_spike_threshold_pct", 200.0)
+    VOLATILITY_THRESHOLD = simple.get("price_range_threshold_pct", 1.5)
+    
+    # Consensus
+    MIN_CONSENSUS_VOTES = PARAMS["consensus"]["min_votes"]
+else:
+    # FALLBACKS (The old hardcoded values)
+    ZSCORE_THRESHOLD = 3.0
+    ZSCORE_STATS = {
+        "return": {"mean": 0.0034, "std": 0.3741},
+        "log_return": {"mean": 0.0027, "std": 0.3744},
+        "price_range": {"mean": 0.4972, "std": 0.3956}
+    }
+    VOLUME_SPIKE_THRESHOLD = 200.0
+    VOLATILITY_THRESHOLD = 1.5
+    MIN_CONSENSUS_VOTES = 2
 
-# Consensus: minimum votes needed
-MIN_CONSENSUS_VOTES = 2
 
 # =============================================================================
 # SCHEMA
@@ -153,161 +179,108 @@ def main():
     parsed_df = kafka_df \
         .selectExpr("CAST(value AS STRING) as json") \
         .select(from_json(col("json"), candle_schema).alias("data")) \
-        .select("data.*")
+        .select("data.*") \
+        .withColumn("timestamp", (col("close_time") / 1000).cast("timestamp")) # Create proper timestamp
     
-    print("      ✅ Schema applied")
+    print("      ✅ Schema applied & Timestamp parsed")
     
     # =========================================================================
-    # STEP 4: FEATURE ENGINEERING
+    # STEP 4: FEATURE ENGINEERING (WINDOWED)
     # =========================================================================
-    print("[4/6] Calculating features...")
+    print("[4/6] Calculating features & Sliding Window stats...")
     
-    # Calculate features (same formulas as batch!)
-    featured_df = parsed_df \
-        .withColumn("return",
-            ((col("close") - col("open")) / col("open")) * 100
+    # 1. Base Features
+    base_df = parsed_df \
+        .withColumn("return", ((col("close") - col("open")) / col("open")) * 100) \
+        .withColumn("price_range", ((col("high") - col("low")) / col("low")) * 100)
+
+    # 2. Define Window
+    # 1 Hour window, sliding every 1 Minute
+    # Watermark = 10 minutes (allow 10m late data)
+    window_duration = "1 hour"
+    slide_duration = "1 minute"
+    
+    windowed_agg = base_df \
+        .withWatermark("timestamp", "10 minutes") \
+        .groupBy(
+            window(col("timestamp"), window_duration, slide_duration),
+            col("symbol")
         ) \
-        .withColumn("log_return",
-            log(col("close") / col("open")) * 100
-        ) \
-        .withColumn("price_range",
-            ((col("high") - col("low")) / col("low")) * 100
+        .agg(
+            # Aggregated Stats
+            round_(mean("return"), 4).alias("avg_return"),
+            round_(stddev("return"), 4).alias("std_return"),
+            round_(mean("price_range"), 4).alias("avg_range"),
+            round_(max("price_range"), 4).alias("max_range"),
+            round_(mean("volume"), 2).alias("avg_volume"),
+            
+            # Current/Last values in the window (approximate 'current state')
+            last("close").alias("close"),
+            last("timestamp").alias("last_ts")
         )
-    
-    print("      ✅ Features: return, log_return, price_range")
+
+    print("      ✅ Sliding Window: 1h window, 1m slide")
     
     # =========================================================================
-    # STEP 5: APPLY ML MODELS
+    # STEP 5: APPLY ML MODELS (ON WINDOWS)
     # =========================================================================
-    print("[5/6] Applying ML models...")
+    print("[5/6] Applying ML models to Windows...")
     
-    # ----- MODEL 1: Z-Score on return -----
-    # Z = (value - mean) / std
-    # Anomaly if |Z| > 3
-    return_mean = ZSCORE_STATS["return"]["mean"]
-    return_std = ZSCORE_STATS["return"]["std"]
+    # Detect anomalies based on the WINDOW's statistics
+    # e.g., If the standard deviation of returns in this hour is very high -> Volatile Period
     
-    model_df = featured_df \
-        .withColumn("return_zscore",
-            (col("return") - lit(return_mean)) / lit(return_std)
+    model_df = windowed_agg \
+        .withColumn("volatility_anomaly", 
+            when(col("std_return") > (ZSCORE_STATS["return"]["std"] * 2), 1).otherwise(0)
         ) \
-        .withColumn("zscore_anomaly",
-            when(abs_(col("return_zscore")) > ZSCORE_THRESHOLD, 1).otherwise(0)
-        )
-    
-    # ----- MODEL 2: Z-Score on price_range -----
-    range_mean = ZSCORE_STATS["price_range"]["mean"]
-    range_std = ZSCORE_STATS["price_range"]["std"]
-    
-    model_df = model_df \
-        .withColumn("range_zscore",
-            (col("price_range") - lit(range_mean)) / lit(range_std)
+        .withColumn("range_anomaly",
+            when(col("max_range") > VOLATILITY_THRESHOLD, 1).otherwise(0)
         ) \
-        .withColumn("volatility_anomaly",
-            when(col("price_range") > VOLATILITY_THRESHOLD, 1).otherwise(0)
+        .withColumn("volume_high",
+            when(col("avg_volume") > 1000, 1).otherwise(0) # Simple threshold
         )
+
+    # =========================================================================
+    # STEP 6: CONSENSUS & OUTPUT
+    # =========================================================================
+    print("[6/6] Formatting output...")
     
-    # ----- MODEL 3: Volume spike (simplified K-Means) -----
-    # We don't have previous volume in streaming, so use absolute threshold
-    # High volume = potential anomaly
-    model_df = model_df \
-        .withColumn("volume_anomaly",
-            when(col("volume") > col("volume") * 2, 1).otherwise(0)
-            # This is a placeholder - in reality we'd compare to historical avg
-            # For now, flag if price_range is high (correlated with volume spikes)
+    output_df = model_df \
+        .withColumn("is_volatile", col("volatility_anomaly") == 1) \
+        .select(
+            col("window.start").alias("window_start"),
+            col("window.end").alias("window_end"),
+            col("symbol"),
+            col("close"),
+            col("avg_return"),
+            col("std_return"),
+            col("max_range"),
+            col("is_volatile")
         )
-    
-    # Replace volume_anomaly with better logic: extreme price range
-    model_df = model_df \
-        .withColumn("volume_anomaly",
-            when(col("price_range") > 1.0, 1).otherwise(0)  # 1% range in 1 min = unusual
-        )
-    
-    print("      ✅ Models: Z-Score(return), Z-Score(range), Volume")
-    
-    # =========================================================================
-    # STEP 6: CONSENSUS VOTING
-    # =========================================================================
-    print("[6/6] Calculating consensus...")
-    
-    # Count votes
-    consensus_df = model_df \
-        .withColumn("votes",
-            col("zscore_anomaly") + col("volatility_anomaly") + col("volume_anomaly")
-        ) \
-        .withColumn("is_anomaly",
-            when(col("votes") >= MIN_CONSENSUS_VOTES, True).otherwise(False)
-        ) \
-        .withColumn("confidence",
-            when(col("votes") >= 3, "HIGH")
-            .when(col("votes") == 2, "MEDIUM")
-            .when(col("votes") == 1, "LOW")
-            .otherwise("NONE")
-        ) \
-        .withColumn("anomaly_reasons",
-            concat_ws(" | ",
-                when(col("zscore_anomaly") == 1, lit("Z-SCORE")).otherwise(lit("")),
-                when(col("volatility_anomaly") == 1, lit("VOLATILITY")).otherwise(lit("")),
-                when(col("volume_anomaly") == 1, lit("VOLUME")).otherwise(lit(""))
-            )
-        )
-    
-    print(f"      ✅ Consensus: {MIN_CONSENSUS_VOTES}+ votes = ANOMALY")
-    
-    # =========================================================================
-    # SELECT OUTPUT COLUMNS
-    # =========================================================================
-    
-    output_df = consensus_df.select(
-        col("symbol"),
-        col("datetime"),
-        round_(col("close"), 2).alias("close"),
-        round_(col("return"), 4).alias("return_pct"),
-        round_(col("return_zscore"), 2).alias("z_score"),
-        round_(col("price_range"), 4).alias("range_pct"),
-        col("zscore_anomaly").alias("m1_zscore"),
-        col("volatility_anomaly").alias("m2_volatility"),
-        col("volume_anomaly").alias("m3_volume"),
-        col("votes"),
-        col("is_anomaly"),
-        col("confidence"),
-        col("anomaly_reasons")
-    )
-    
+
     # =========================================================================
     # START STREAMING
     # =========================================================================
-    
-    print()
-    print("=" * 70)
-    print("🚀 STREAMING STARTED - REAL-TIME ANOMALY DETECTION")
-    print("=" * 70)
-    print()
-    print("Model Parameters (from batch training):")
-    print(f"  Z-Score threshold: {ZSCORE_THRESHOLD}")
-    print(f"  Return mean: {return_mean:.4f}, std: {return_std:.4f}")
-    print(f"  Range mean: {range_mean:.4f}, std: {range_std:.4f}")
-    print(f"  Volatility threshold: {VOLATILITY_THRESHOLD}%")
-    print()
-    print("Consensus Rules:")
-    print(f"  • 3 votes = HIGH confidence anomaly")
-    print(f"  • 2 votes = MEDIUM confidence anomaly")
-    print(f"  • 1 vote  = LOW confidence (not flagged)")
-    print(f"  • 0 votes = NORMAL")
-    print()
-    print("Waiting for candles... (Ctrl+C to stop)")
-    print("=" * 70)
-    print()
+    print("\n" + "="*70)
+    print("🚀 STREAMING STARTED (SLIDING WINDOW MODE)")
+    print("="*70)
+    print(f"Window: {window_duration}, Slide: {slide_duration}")
+    print("Aggregating stats over 1 hour to find Volatile Periods...")
+    print("="*70 + "\n")
     
     # Write to console
+    # MUST use "update" mode for aggregations (to see results before window closes)
+    # or "complete" (but that keeps all state)
+    # "append" only outputs when window CLOSES (after watermark) -> 10m latency!
+    
     query = output_df \
         .writeStream \
-        .outputMode("append") \
+        .outputMode("update") \
         .format("console") \
         .option("truncate", "false") \
-        .option("numRows", 50) \
-        .option("checkpointLocation", CHECKPOINT_DIR) \
-        .trigger(processingTime="5 seconds") \
+        .option("numRows", 20) \
+        .option("checkpointLocation", CHECKPOINT_DIR + "_windowed") \
+        .trigger(processingTime="10 seconds") \
         .start()
     
     query.awaitTermination()

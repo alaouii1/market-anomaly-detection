@@ -56,20 +56,28 @@ OUTPUT_PATH = "/home/jovyan/work/data/results/streaming_anomalies"
 
 def load_model_params(file_path="models/model_params.json"):
     """Load model parameters from JSON file."""
-    if not os.path.exists(file_path):
-        print(f"⚠️ WARNING: Config file not found at {file_path}")
-        print("   Using fallback/default values (NOT RECOMMENDED for production)")
-        return None
-        
-    try:
-        with open(file_path, 'r') as f:
-            params = json.load(f)
-        print(f"✅ Loaded model parameters from {file_path}")
-        print(f"   Created: {params.get('_created', 'Unknown date')}")
-        return params
-    except Exception as e:
-        print(f"❌ Error loading config: {e}")
-        return None
+    # Try finding the file in a few common locations
+    possible_paths = [
+        file_path,
+        os.path.join(os.path.dirname(__file__), "models", "model_params.json"),
+        "src/models/model_params.json",
+        "/home/jovyan/work/src/models/model_params.json"
+    ]
+    
+    for path in possible_paths:
+        if os.path.exists(path):
+            try:
+                with open(path, 'r') as f:
+                    params = json.load(f)
+                print(f"✅ Loaded model parameters from {path}")
+                print(f"   Created: {params.get('_created', 'Unknown date')}")
+                return params
+            except Exception as e:
+                print(f"❌ Error loading config from {path}: {e}")
+                
+    print(f"⚠️ WARNING: Config file not found in: {possible_paths}")
+    print("   Using fallback/default values (NOT RECOMMENDED for production)")
+    return None
 
 # Load params
 PARAMS = load_model_params()
@@ -94,7 +102,8 @@ else:
     ZSCORE_STATS = {
         "return": {"mean": 0.0034, "std": 0.3741},
         "log_return": {"mean": 0.0027, "std": 0.3744},
-        "price_range": {"mean": 0.4972, "std": 0.3956}
+        "price_range": {"mean": 0.4972, "std": 0.3956},
+        "volume_change": {"mean": 20.9250, "std": 93.3035}  # Added missing key
     }
     VOLUME_SPIKE_THRESHOLD = 200.0
     VOLATILITY_THRESHOLD = 1.5

@@ -78,6 +78,28 @@ def create_kafka_producer():
         props.put("value.serializer", StringSerializer.class);
         KafkaProducer<String, String> producer = new KafkaProducer<>(props);
     """
+    # Create topic if it doesn't exist
+    from kafka.admin import KafkaAdminClient, NewTopic
+    try:
+        admin_client = KafkaAdminClient(
+            bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+            client_id='admin-producer-setup'
+        )
+        topic_list = [NewTopic(name=KAFKA_TOPIC, num_partitions=3, replication_factor=1)]
+        
+        # Check if topic exists
+        existing_topics = admin_client.list_topics()
+        if KAFKA_TOPIC not in existing_topics:
+            print(f"⚠️ Topic '{KAFKA_TOPIC}' does not exist. Creating it...")
+            admin_client.create_topics(new_topics=topic_list, validate_only=False)
+            print(f"✅ Created topic: {KAFKA_TOPIC}")
+        else:
+            print(f"✅ Topic '{KAFKA_TOPIC}' already exists.")
+            
+        admin_client.close()
+    except Exception as e:
+        print(f"⚠️ Warning: Could not verify/create topic (assuming it exists or auto-create is on): {e}")
+
     producer = KafkaProducer(
         # Where to find Kafka brokers
         bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,

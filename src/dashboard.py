@@ -17,7 +17,12 @@ st.set_page_config(
 )
 
 # Paths to the streaming data (CSV output from Spark)
-DATA_BASE_DIR = "/home/jovyan/work/data/results" if os.environ.get("AM_I_IN_DOCKER") else "data/results"
+# Auto-detect environment (Docker vs Local)
+if os.path.exists("/home/jovyan/work/data/results"):
+    DATA_BASE_DIR = "/home/jovyan/work/data/results"
+else:
+    DATA_BASE_DIR = "data/results"
+
 CANDLE_DIR = os.path.join(DATA_BASE_DIR, "streaming_candle_anomalies")
 WINDOW_DIR = os.path.join(DATA_BASE_DIR, "streaming_window_anomalies")
 
@@ -42,8 +47,9 @@ def load_latest_data(directory):
         # Sort by modification time (newest last)
         all_files.sort(key=os.path.getmtime)
         
-        # Take the last 5 files (avoids reading thousands of tiny files)
-        recent_files = all_files[-5:] 
+        # Take the last 50 files (approx 5-10 mins of history)
+        # Spark writes small files often (stream), so we need many of them for a line chart
+        recent_files = all_files[-50:] 
         
         dfs = []
         for f in recent_files:

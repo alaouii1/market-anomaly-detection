@@ -2,3 +2,5 @@ requests
 pandas
 websocket-client
 kafka-python
+streamlit
+plotly

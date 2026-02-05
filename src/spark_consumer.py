@@ -1,33 +1,30 @@
 """
 =============================================================================
-SPARK STRUCTURED STREAMING - REAL-TIME ANOMALY DETECTION
+REAL-TIME ANOMALY DETECTION - TWO APPROACHES
 =============================================================================
 
-This is the REAL consumer that:
-  1. Reads candles from Kafka in real-time
-  2. Calculates features (same as batch: return, log_return, price_range)
-  3. Applies TRAINED models:
-     - Z-Score: Using batch statistics (mean, std)
-     - K-Means simplified: Using distance thresholds
-     - GMM simplified: Using probability thresholds
-  4. Consensus detection: 2+ models agree = HIGH CONFIDENCE anomaly
-  5. Outputs results to console AND saves to file
+This consumer implements TWO types of anomaly detection:
 
-Architecture:
-  ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-  │      Kafka      │────►│ Spark Streaming │────►│    Anomalies    │
-  │ (crypto-candles)│     │  + ML Models    │     │ (Console+File)  │
-  └─────────────────┘     └─────────────────┘     └─────────────────┘
+1. PER-CANDLE DETECTION (Point-based, matches batch processing)
+   - Applies Z-Score to individual candles as they arrive
+   - Detects: "Is THIS specific candle anomalous?"
+   - Uses: return, log_return, price_range features
+   - Consensus: 2+ features flagged = anomaly
+   - Output: streaming_candle_anomalies/
 
-Models Applied:
-  • Z-Score: |z| > 3 on return, log_return, price_range
-  • Volume Spike: volume_change > 200% (simplified K-Means)
-  • Volatility: price_range > 1.5% (simplified GMM)
-  • Consensus: 2+ methods agree = ANOMALY
+2. WINDOW DETECTION (Aggregate-based, period volatility)
+   - Sliding 1-hour windows, updated every 1 minute
+   - Detects: "Is this TIME PERIOD volatile?"
+   - Uses: window statistics (avg, std, max)
+   - Consensus: 2+ window metrics flagged = anomaly
+   - Output: streaming_window_anomalies/
 
-Usage:
-  spark-submit --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0 spark_consumer.py
+Both approaches are valid for real-time monitoring:
+- Candle detection: Immediate alerts on unusual individual candles
+- Window detection: Identifies sustained volatile periods
 
+This matches our batch processing methodology while adding real-time
+sliding window analysis for period-based monitoring.
 =============================================================================
 """
 
@@ -180,25 +177,72 @@ def main():
         .selectExpr("CAST(value AS STRING) as json") \
         .select(from_json(col("json"), candle_schema).alias("data")) \
         .select("data.*") \
-        .withColumn("timestamp", (col("close_time") / 1000).cast("timestamp")) # Create proper timestamp
+        .withColumn("timestamp", (col("close_time") / 1000).cast("timestamp"))
     
     print("      ✅ Schema applied & Timestamp parsed")
-    
-    # =========================================================================
-    # STEP 4: FEATURE ENGINEERING (WINDOWED)
-    # =========================================================================
-    print("[4/6] Calculating features & Sliding Window stats...")
     
     # 1. Base Features
     base_df = parsed_df \
         .withColumn("return", ((col("close") - col("open")) / col("open")) * 100) \
         .withColumn("price_range", ((col("high") - col("low")) / col("low")) * 100)
 
-    # 2. Define Window
-    # 1 Hour window, sliding every 1 Minute
-    # Watermark = 10 minutes (allow 10m late data)
+    # =========================================================================
+    # STEP 4: PER-CANDLE ANOMALY DETECTION (matches batch methodology)
+    # =========================================================================
+    print("[4/6] Calculating per-candle features & anomalies...")
+    print(f"      Using Z-Score threshold: {ZSCORE_THRESHOLD}")
+
+    # Calculate all features
+    features_df = base_df \
+        .withColumn("log_return", log((col("close") / col("open"))) * 100) \
+        .withColumn("return_zscore",
+            (col("return") - lit(ZSCORE_STATS["return"]["mean"])) / lit(ZSCORE_STATS["return"]["std"])
+        ) \
+        .withColumn("log_return_zscore",
+            (col("log_return") - lit(ZSCORE_STATS["log_return"]["mean"])) / lit(ZSCORE_STATS["log_return"]["std"])
+        ) \
+        .withColumn("price_range_zscore",
+            (col("price_range") - lit(ZSCORE_STATS["price_range"]["mean"])) / lit(ZSCORE_STATS["price_range"]["std"])
+        )
+
+    # Per-candle anomaly detection (Z-Score method from batch)
+    candle_anomalies = features_df \
+        .withColumn("anomaly_return", when(abs_(col("return_zscore")) > ZSCORE_THRESHOLD, 1).otherwise(0)) \
+        .withColumn("anomaly_log_return", when(abs_(col("log_return_zscore")) > ZSCORE_THRESHOLD, 1).otherwise(0)) \
+        .withColumn("anomaly_price_range", when(abs_(col("price_range_zscore")) > ZSCORE_THRESHOLD, 1).otherwise(0)) \
+        .withColumn("candle_votes",
+            col("anomaly_return") + col("anomaly_log_return") + col("anomaly_price_range")
+        ) \
+        .withColumn("is_candle_anomaly", when(col("candle_votes") >= 2, True).otherwise(False))
+
+    # Output candle anomalies to separate stream
+    candle_output = candle_anomalies.select(
+        col("timestamp"),
+        col("symbol"),
+        col("open"),
+        col("high"),
+        col("low"),
+        col("close"),
+        col("volume"),
+        col("return"),
+        col("log_return"),
+        col("price_range"),
+        col("return_zscore"),
+        col("log_return_zscore"),
+        col("price_range_zscore"),
+        col("candle_votes"),
+        col("is_candle_anomaly")
+    )
+    
+    # =========================================================================
+    # STEP 5: SLIDING WINDOW ANALYSIS
+    # =========================================================================
+    print("[5/6] Sliding window analysis & Consensus Voting...")
+    
+    # Define Window
     window_duration = "1 hour"
     slide_duration = "1 minute"
+    print(f"      Window: {window_duration}, Slide: {slide_duration}")
     
     windowed_agg = base_df \
         .withWatermark("timestamp", "10 minutes") \
@@ -214,40 +258,52 @@ def main():
             round_(max("price_range"), 4).alias("max_range"),
             round_(mean("volume"), 2).alias("avg_volume"),
             
-            # Current/Last values in the window (approximate 'current state')
+            # Current/Last values
             last("close").alias("close"),
             last("timestamp").alias("last_ts")
         )
 
-    print("      ✅ Sliding Window: 1h window, 1m slide")
-    
-    # =========================================================================
-    # STEP 5: APPLY ML MODELS (ON WINDOWS)
-    # =========================================================================
-    print("[5/6] Applying ML models to Windows...")
-    
-    # Detect anomalies based on the WINDOW's statistics
-    # e.g., If the standard deviation of returns in this hour is very high -> Volatile Period
-    
+    # Apply ML Models (Dynamic Thresholds)
     model_df = windowed_agg \
         .withColumn("volatility_anomaly", 
-            when(col("std_return") > (ZSCORE_STATS["return"]["std"] * 2), 1).otherwise(0)
+            # Compare window std to historical std (from batch)
+            when(col("std_return") > (lit(ZSCORE_STATS["return"]["std"]) * 2.0), 1).otherwise(0)
         ) \
         .withColumn("range_anomaly",
-            when(col("max_range") > VOLATILITY_THRESHOLD, 1).otherwise(0)
+            # Max range in window exceeds threshold
+            when(col("max_range") > lit(VOLATILITY_THRESHOLD), 1).otherwise(0)
         ) \
-        .withColumn("volume_high",
-            when(col("avg_volume") > 1000, 1).otherwise(0) # Simple threshold
+        .withColumn("volume_anomaly",
+            # Volume spike detection
+            when(col("avg_volume") > (lit(ZSCORE_STATS["volume_change"]["mean"]) + 
+                                       lit(ZSCORE_STATS["volume_change"]["std"]) * 2), 1).otherwise(0)
         )
 
-    # =========================================================================
-    # STEP 6: CONSENSUS & OUTPUT
-    # =========================================================================
-    print("[6/6] Formatting output...")
-    
-    output_df = model_df \
-        .withColumn("is_volatile", col("volatility_anomaly") == 1) \
+    # Calculate Consensus
+    consensus_df = model_df \
+        .withColumn("total_votes", 
+            col("volatility_anomaly") + col("range_anomaly") + col("volume_anomaly")
+        ) \
+        .withColumn("is_anomaly", 
+            when(col("total_votes") >= MIN_CONSENSUS_VOTES, True).otherwise(False)
+        ) \
+        .withColumn("confidence",
+            when(col("total_votes") >= 3, "HIGH")
+            .when(col("total_votes") == 2, "MEDIUM")
+            .when(col("total_votes") == 1, "LOW")
+            .otherwise("NONE")
+        ) \
+        .withColumn("anomaly_reasons",
+            concat_ws(" | ",
+                when(col("volatility_anomaly") == 1, "VOLATILITY").otherwise(lit("")),
+                when(col("range_anomaly") == 1, "RANGE").otherwise(lit("")),
+                when(col("volume_anomaly") == 1, "VOLUME").otherwise(lit(""))
+            )
+        )
+
+    output_df = consensus_df \
         .select(
+            # Window results
             col("window.start").alias("window_start"),
             col("window.end").alias("window_end"),
             col("symbol"),
@@ -255,35 +311,74 @@ def main():
             col("avg_return"),
             col("std_return"),
             col("max_range"),
-            col("is_volatile")
+            col("avg_volume"),
+            
+            # Models
+            col("volatility_anomaly"),
+            col("range_anomaly"),
+            col("volume_anomaly"),
+            
+            # Consensus
+            col("total_votes"),
+            col("is_anomaly"),
+            col("confidence"),
+            col("anomaly_reasons")
         )
 
     # =========================================================================
-    # START STREAMING
+    # STEP 6: START DUAL STREAMS
     # =========================================================================
+    print("[6/6] Starting dual output streams...")
+    
+    CANDLE_ANOMALY_PATH = "/home/jovyan/work/data/results/streaming_candle_anomalies"
+    WINDOW_ANOMALY_PATH = "/home/jovyan/work/data/results/streaming_window_anomalies"
+    print(f"      Candle anomalies → {CANDLE_ANOMALY_PATH}")
+    print(f"      Window anomalies → {WINDOW_ANOMALY_PATH}")
+
+    # 1. Output Candle Anomalies (APPEND mode)
+    # coalesce(1) attempts to merge partitions to write fewer files
+    candle_query = candle_output \
+        .coalesce(1) \
+        .writeStream \
+        .outputMode("append") \
+        .format("csv") \
+        .option("path", CANDLE_ANOMALY_PATH) \
+        .option("header", "true") \
+        .option("checkpointLocation", CHECKPOINT_DIR + "_candles") \
+        .trigger(processingTime="5 seconds") \
+        .start()
+
+    # 2. Output Window Anomalies (APPEND mode)
+    window_query = output_df \
+        .coalesce(1) \
+        .writeStream \
+        .outputMode("append") \
+        .format("csv") \
+        .option("path", WINDOW_ANOMALY_PATH) \
+        .option("header", "true") \
+        .option("checkpointLocation", CHECKPOINT_DIR + "_windows") \
+        .trigger(processingTime="10 seconds") \
+        .start()
+    
+    # 3. Console Output (UPDATE mode for monitoring)
     print("\n" + "="*70)
-    print("🚀 STREAMING STARTED (SLIDING WINDOW MODE)")
+    print("🚀 STREAMING STARTED (DUAL MODE)")
     print("="*70)
-    print(f"Window: {window_duration}, Slide: {slide_duration}")
-    print("Aggregating stats over 1 hour to find Volatile Periods...")
-    print("="*70 + "\n")
     
-    # Write to console
-    # MUST use "update" mode for aggregations (to see results before window closes)
-    # or "complete" (but that keeps all state)
-    # "append" only outputs when window CLOSES (after watermark) -> 10m latency!
-    
-    query = output_df \
+    console_query = output_df \
         .writeStream \
         .outputMode("update") \
         .format("console") \
         .option("truncate", "false") \
-        .option("numRows", 20) \
-        .option("checkpointLocation", CHECKPOINT_DIR + "_windowed") \
+        .option("numRows", 10) \
+        .option("checkpointLocation", CHECKPOINT_DIR + "_console") \
         .trigger(processingTime="10 seconds") \
         .start()
     
-    query.awaitTermination()
+    try:
+        spark.streams.awaitAnyTermination()
+    except KeyboardInterrupt:
+        print("\n⚠️ Shutting down gracefully...")
 
 
 if __name__ == "__main__":

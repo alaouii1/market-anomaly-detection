@@ -55,7 +55,8 @@ services:
     image: jupyter/pyspark-notebook:latest
     container_name: jupyter
     ports:
-      - "8888:8888"
+      - "8888:8888"  # Jupyter
+      - "8501:8501"  # Streamlit UI
     volumes:
       # Mount project folder → accessible at /home/jovyan/work in container
       - .:/home/jovyan/work
